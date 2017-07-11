@@ -9,6 +9,9 @@
 #include <unistd.h>
 #include <limits.h>
 
+#include "mincrypt/sha.h"
+#include "mincrypt/sha256.h"
+
 #include "../include/libbootimg.h"
 
 #define DEFAULT_PAGE_SIZE 2048
@@ -40,56 +43,132 @@ static int translate_fread_error(FILE *f)
         return LIBBOOTIMG_ERROR_OTHER;
 }
 
-// 32bit FNV-1a hash algorithm
-// http://isthe.com/chongo/tech/comp/fnv/#FNV-1a
-static uint32_t calc_fnv_hash(void *data, unsigned len)
+enum hash_alg {
+    HASH_UNKNOWN = -1,
+    HASH_SHA1 = 0,
+    HASH_SHA256,
+};
+
+struct hash_name {
+    const char *name;
+    enum hash_alg alg;
+};
+
+const struct hash_name hash_names[] = {
+    { "sha1", HASH_SHA1 },
+    { "sha256", HASH_SHA256 },
+    { NULL, /* Sentinel */ },
+};
+
+enum hash_alg parse_hash_alg(char *name)
 {
-    const uint32_t FNV_prime = 16777619U;
-    const uint32_t offset_basis = 2166136261U;
+    const struct hash_name *ptr = hash_names;
 
-    uint32_t *d = (uint32_t*)data;
-    uint32_t i, max;
-    uint32_t hash = offset_basis;
-
-    max = len/4;
-
-    // 32 bit data
-    for(i = 0; i < max; ++i)
-    {
-        hash ^= d[i];
-        hash *= FNV_prime;
+    while (ptr->name) {
+        if (!strcmp(ptr->name, name))
+            return ptr->alg;
+        ptr++;
     }
 
-    // last bits
-    for(i *= 4; i < len; ++i)
-    {
-        hash ^= (uint32_t) ((uint8_t*)data)[i];
-        hash *= FNV_prime;
+    return HASH_UNKNOWN;
+}
+
+const char *detect_hash_type(const struct boot_img_hdr *hdr)
+{
+    /*
+     * This isn't a sophisticated or 100% reliable method to detect the hash
+     * type but it's probably good enough.
+     *
+     * sha256 is expected to have no zeroes in the id array
+     * sha1 is expected to have zeroes in id[5], id[6] and id[7]
+     * Zeroes anywhere else probably indicates neither.
+     */
+    const uint32_t *id = hdr->id;
+    if (id[0] != 0 && id[1] != 0 && id[2] != 0 && id[3] != 0 &&
+        id[4] != 0 && id[5] != 0 && id[6] != 0 && id[7] != 0)
+        return "sha256";
+    else if (id[0] != 0 && id[1] != 0 && id[2] != 0 && id[3] != 0 &&
+        id[4] != 0 && id[5] == 0 && id[6] == 0 && id[7] == 0)
+        return "sha1";
+    else
+        return "unknown";
+}
+
+void generate_id_sha1(struct boot_img_hdr *hdr, void *kernel_data, void *ramdisk_data,
+                      void *second_data, void *dt_data)
+{
+    SHA_CTX ctx;
+    const uint8_t *sha;
+
+    SHA_init(&ctx);
+    SHA_update(&ctx, kernel_data, hdr->kernel_size);
+    SHA_update(&ctx, &hdr->kernel_size, sizeof(hdr->kernel_size));
+    SHA_update(&ctx, ramdisk_data, hdr->ramdisk_size);
+    SHA_update(&ctx, &hdr->ramdisk_size, sizeof(hdr->ramdisk_size));
+    SHA_update(&ctx, second_data, hdr->second_size);
+    SHA_update(&ctx, &hdr->second_size, sizeof(hdr->second_size));
+    if(dt_data) {
+        SHA_update(&ctx, dt_data, hdr->dt_size);
+        SHA_update(&ctx, &hdr->dt_size, sizeof(hdr->dt_size));
     }
-    return hash;
+    sha = SHA_final(&ctx);
+    memcpy(hdr->id, sha,
+           SHA_DIGEST_SIZE > sizeof(hdr->id) ? sizeof(hdr->id) : SHA_DIGEST_SIZE);
+}
+
+void generate_id_sha256(struct boot_img_hdr *hdr, void *kernel_data, void *ramdisk_data,
+                        void *second_data, void *dt_data)
+{
+    SHA256_CTX ctx;
+    const uint8_t *sha;
+
+    SHA256_init(&ctx);
+    SHA256_update(&ctx, kernel_data, hdr->kernel_size);
+    SHA256_update(&ctx, &hdr->kernel_size, sizeof(hdr->kernel_size));
+    SHA256_update(&ctx, ramdisk_data, hdr->ramdisk_size);
+    SHA256_update(&ctx, &hdr->ramdisk_size, sizeof(hdr->ramdisk_size));
+    SHA256_update(&ctx, second_data, hdr->second_size);
+    SHA256_update(&ctx, &hdr->second_size, sizeof(hdr->second_size));
+    if(dt_data) {
+        SHA256_update(&ctx, dt_data, hdr->dt_size);
+        SHA256_update(&ctx, &hdr->dt_size, sizeof(hdr->dt_size));
+    }
+    sha = SHA256_final(&ctx);
+    memcpy(hdr->id, sha,
+           SHA256_DIGEST_SIZE > sizeof(hdr->id) ? sizeof(hdr->id) : SHA256_DIGEST_SIZE);
+}
+
+void generate_id(enum hash_alg alg, struct boot_img_hdr *hdr, void *kernel_data,
+                 void *ramdisk_data, void *second_data, void *dt_data)
+{
+    switch (alg) {
+        case HASH_SHA1:
+            generate_id_sha1(hdr, kernel_data, ramdisk_data,
+                             second_data, dt_data);
+            break;
+        case HASH_SHA256:
+            generate_id_sha256(hdr, kernel_data, ramdisk_data,
+                               second_data, dt_data);
+            break;
+        case HASH_UNKNOWN:
+        default:
+            fprintf(stderr, "Unknown hash type.\n");
+    }
 }
 
 static void fill_id_hashes(struct bootimg *b)
 {
-    int i = 0;
+    enum hash_alg current_hash_alg = parse_hash_alg((char *)detect_hash_type(&(b->hdr)));
 
-    // hash blobs
-    for (; i < LIBBOOTIMG_BLOB_CNT ; ++i)
-    {
-        if (b->blobs[i].size != NULL)
-        {
-            b->hdr.id[i] = calc_fnv_hash(b->blobs[i].data, *b->blobs[i].size);
-        }
+    if (current_hash_alg == HASH_UNKNOWN) {
+        // Old trampoline injection would show up as unknown so force sha1
+        memset(b->hdr.id, 0, sizeof(b->hdr.id));
+        current_hash_alg = HASH_SHA1;
     }
 
-    // hash kernel, ramdisk and second _addr and _size together
-    b->hdr.id[i++] = calc_fnv_hash(&b->hdr.kernel_size, sizeof(uint32_t)*6);
-
-    // hash tags_addr, page_size, dt_size and unused together
-    b->hdr.id[i++] = calc_fnv_hash(&b->hdr.tags_addr, sizeof(uint32_t)*4);
-
-    // cmdline is directly after name, so hash them together
-    b->hdr.id[i++] = calc_fnv_hash(b->hdr.name, BOOT_NAME_SIZE + strlen((char*)b->hdr.cmdline));
+    generate_id(current_hash_alg, &(b->hdr), b->blobs[LIBBOOTIMG_BLOB_KERNEL].data,
+                b->blobs[LIBBOOTIMG_BLOB_RAMDISK].data, b->blobs[LIBBOOTIMG_BLOB_SECOND].data,
+                b->blobs[LIBBOOTIMG_BLOB_DTB].data);
 }
 
 
