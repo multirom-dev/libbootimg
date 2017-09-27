@@ -1113,10 +1113,6 @@ int libbootimg_write_img_fileptr(struct bootimg *b, FILE *f)
     // make sure it ends with 0
     b->hdr.cmdline[BOOT_ARGS_SIZE-1] = 0;
 
-    // set unused field to 0 - we might not be handling something
-    // which gets turned-on by this field, like with dtb
-    b->hdr.unused = 0;
-
     fill_id_hashes(b);
 
     blank = malloc(b->hdr.page_size);
