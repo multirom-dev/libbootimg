@@ -83,6 +83,7 @@ static void print_help(const char *prog_name)
     "    secondaddr = 0x1234                 - 2nd stage load address\n"
     "    tagsaddr = 0x1234                   - atags address\n"
     "    name = string without quotes        - name of the image, max 16 characters\n"
+    "    osversion = 0x1234                  - OS Version and Patch Level\n"
     "    cmdline = string without quotes     - cmdline, max 512 characters\n"
     ,libbootimg_version_str(), prog_name, prog_name, prog_name, prog_name, prog_name, prog_name);
 }
@@ -105,9 +106,10 @@ static int write_config(struct bbootimg_info *i, const char *dst)
         "secondaddr = 0x%X\n"
         "tagsaddr = 0x%X\n"
         "name = %s\n"
+        "osversion = 0x%X\n"
         "cmdline = %s\n",
         (uint32_t)i->img_size, i->img.hdr.page_size, i->img.hdr.kernel_addr, i->img.hdr.ramdisk_addr,
-        i->img.hdr.second_addr, i->img.hdr.tags_addr, i->img.hdr.name, i->img.hdr.cmdline);
+        i->img.hdr.second_addr, i->img.hdr.tags_addr, i->img.hdr.name, i->img.hdr.os_version, i->img.hdr.cmdline);
 
     fclose(f);
     return res;
@@ -166,6 +168,8 @@ static int load_config_line(struct bbootimg_info *i, const char *line)
         i->img.hdr.tags_addr = strtoll(arg_s, NULL, 0);
     else if(strncmp("name", start, n_to_cmp) == 0)
         parse_config_str((char*)i->img.hdr.name, arg_s, end, BOOT_NAME_SIZE);
+    else if(strncmp("osversion", start, n_to_cmp) == 0)
+        i->img.hdr.os_version = strtoll(arg_s, NULL, 0);
     else if(strncmp("cmdline", start, n_to_cmp) == 0)
         parse_config_str((char*)i->img.hdr.cmdline, arg_s, end, BOOT_ARGS_SIZE);
     else
@@ -301,6 +305,27 @@ static int print_info(const char *path)
     }
     printf ("]\n\n", name);
 
+    if (img.hdr.os_version != 0) {
+        int a,b,c,y,m = 0;
+        int os_version,os_patch_level;
+
+        os_version = img.hdr.os_version >> 11;
+        os_patch_level = img.hdr.os_version&0x7ff;
+
+        a = (os_version >> 14)&0x7f;
+        b = (os_version >> 7)&0x7f;
+        c = os_version&0x7f;
+
+        y = (os_patch_level >> 4) + 2000;
+        m = os_patch_level&0xf;
+
+        printf ("* os_version: 0x%08x\n", img.hdr.os_version);
+        if((a < 128) && (b < 128) && (c < 128) && (y >= 2000) && (y < 2128) && (m > 0) && (m <= 12)) {
+            printf("  [ Android version = %d.%d.%d  Security patch level = %d-%02d ]\n", a, b, c, y, m);
+        }
+        printf("\n");
+    }
+
     printf ("* kernel size       = %u bytes (%.2f MB)\n", img.hdr.kernel_size, (double)img.hdr.kernel_size/0x100000);
     printf ("  ramdisk size      = %u bytes (%.2f MB)\n", img.hdr.ramdisk_size, (double)img.hdr.ramdisk_size/0x100000);
     if (img.hdr.second_size)
@@ -364,6 +389,7 @@ static int print_json(const char *path)
     printf("        \"tags_addr\": %u,\n", img.hdr.tags_addr);
     printf("        \"page_size\": %u,\n", img.hdr.page_size);
     printf("        \"name\": \"%s\",\n", name);
+    printf("        \"os_version\": %u,\n", img.hdr.os_version);
     printf("        \"cmdline\": \"%s\",\n", img.hdr.cmdline);
     printf("        \"dt_size\": %u,\n", img.hdr.dt_size);
     printf("        \"id\": [\n");
