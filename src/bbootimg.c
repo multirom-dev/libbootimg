@@ -303,7 +303,7 @@ static int print_info(const char *path)
     {
         printf ("0x%02X ", name[i]);
     }
-    printf ("]\n\n", name);
+    printf ("]\n\n");
 
     if (img.hdr.os_version != 0) {
         int a,b,c,y,m = 0;
