@@ -14,8 +14,8 @@ extern "C" {
 #include <cutils/klog.h>
 #include "boot_img_hdr.h"
 
-#define LIBBOOTIMG_VERSION 0x000203 // 0xMMNNPP
-#define LIBBOOTIMG_VERSION_STR "0.2.3"
+#define LIBBOOTIMG_VERSION 0x000204 // 0xMMNNPP
+#define LIBBOOTIMG_VERSION_STR "0.2.4"
 
 #ifdef DEBUG_KMSG
 #define LOG_DBG(fmt, ...) klog_write(3, "<3>%s: " fmt, "libbootimg", ##__VA_ARGS__)
